@@ -36,7 +36,11 @@ if (${PLATFORM} MATCHES "Desktop")
             find_library(OSS_LIBRARY ossaudio)
         endif ()
 
-        set(LIBS_PRIVATE m atomic pthread ${OPENGL_LIBRARIES} ${OSS_LIBRARY})
+        set(LIBS_PRIVATE m pthread ${OPENGL_LIBRARIES} ${OSS_LIBRARY})
+
+        if (LINK_LIBATOMIC)
+            set(LIBS_PRIVATE ${LIBS_PRIVATE} atomic)
+        endif ()
 
         if (USE_AUDIO)
             set(LIBS_PRIVATE ${LIBS_PRIVATE} dl)
@@ -89,7 +93,11 @@ elseif ("${PLATFORM}" MATCHES "DRM")
     if (NOT CMAKE_CROSSCOMPILING)
         include_directories(/usr/include/libdrm)
     endif ()
-    set(LIBS_PRIVATE ${GLESV2} ${EGL} ${DRM} ${GBM} atomic pthread m dl)
+    set(LIBS_PRIVATE ${GLESV2} ${EGL} ${DRM} ${GBM} pthread m dl)
+
+    if (LINK_LIBATOMIC)
+        set(LIBS_PRIVATE ${LIBS_PRIVATE} atomic)
+    endif ()
 
 endif ()
 
