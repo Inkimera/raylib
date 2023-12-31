@@ -1543,6 +1543,7 @@ RLAPI void SetModelMeshMaterial(Model *model, int meshId, int materialId);      
 
 // Model animations loading/unloading functions
 RLAPI ModelAnimation *LoadModelAnimations(const char *fileName, int *animCount);            // Load model animations from file
+RLAPI ModelAnimation *LoadModelAnimationsFromMemory(const char *fileName, const char *bytes, int *animCount);            // Load model animations from file
 RLAPI void UpdateModelAnimation(Model model, ModelAnimation anim, int frame);               // Update model animation pose
 RLAPI void UnloadModelAnimation(ModelAnimation anim);                                       // Unload animation data
 RLAPI void UnloadModelAnimations(ModelAnimation *animations, int animCount);                // Unload animation array data

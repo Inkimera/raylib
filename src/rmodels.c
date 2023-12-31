@@ -163,7 +163,9 @@ static Model LoadVOX(const char *filename);     // Load VOX mesh data
 #endif
 #if defined(SUPPORT_FILEFORMAT_M3D)
 static Model LoadM3D(const char *filename);     // Load M3D mesh data
+static Model LoadM3DFromMemory(const char *filename, const char *fileData);     // Load M3D mesh data
 static ModelAnimation *LoadModelAnimationsM3D(const char *fileName, int *animCount);   // Load M3D animation data
+static ModelAnimation *LoadModelAnimationsM3DFromMemory(const char *fileName, const char *fileData, int *animCount);   // Load M3D animation data
 #endif
 #if defined(SUPPORT_FILEFORMAT_OBJ) || defined(SUPPORT_FILEFORMAT_MTL)
 static void ProcessMaterialsOBJ(Material *rayMaterials, tinyobj_material_t *materials, int materialCount);  // Process obj materials
@@ -1074,12 +1076,13 @@ Model LoadModel(const char *fileName)
     return model;
 }
 
-Model LoadModelFromMemory(const char *fileName, const char *fileText)
+// Load model from memory (mesh and material)
+Model LoadModelFromMemory(const char *fileName, const char *bytes)
 {
     Model model = { 0 };
 
 #if defined(SUPPORT_FILEFORMAT_OBJ)
-    if (IsFileExtension(fileName, ".obj")) model = LoadOBJFromMemory(fileName, fileText);
+    if (IsFileExtension(fileName, ".obj")) model = LoadOBJFromMemory(fileName, bytes);
 #endif
 //#if defined(SUPPORT_FILEFORMAT_IQM)
 //    if (IsFileExtension(fileName, ".iqm")) model = LoadIQM(fileName);
@@ -1090,9 +1093,9 @@ Model LoadModelFromMemory(const char *fileName, const char *fileText)
 //#if defined(SUPPORT_FILEFORMAT_VOX)
 //    if (IsFileExtension(fileName, ".vox")) model = LoadVOX(fileName);
 //#endif
-//#if defined(SUPPORT_FILEFORMAT_M3D)
-//    if (IsFileExtension(fileName, ".m3d")) model = LoadM3D(fileName);
-//#endif
+#if defined(SUPPORT_FILEFORMAT_M3D)
+    if (IsFileExtension(fileName, ".m3d")) model = LoadM3DFromMemory(fileName, bytes);
+#endif
 
     // Make sure model transform is set to identity matrix!
     model.transform = MatrixIdentity();
@@ -2033,6 +2036,24 @@ ModelAnimation *LoadModelAnimations(const char *fileName, int *animCount)
 #if defined(SUPPORT_FILEFORMAT_GLTF)
     if (IsFileExtension(fileName, ".gltf;.glb")) animations = LoadModelAnimationsGLTF(fileName, animCount);
 #endif
+
+    return animations;
+}
+
+// Load model animations from memory
+ModelAnimation *LoadModelAnimationsFromMemory(const char *fileName, const char *bytes, int *animCount)
+{
+    ModelAnimation *animations = NULL;
+
+//#if defined(SUPPORT_FILEFORMAT_IQM)
+//    if (IsFileExtension(fileName, ".iqm")) animations = LoadModelAnimationsIQM(fileName, animCount);
+//#endif
+#if defined(SUPPORT_FILEFORMAT_M3D)
+    if (IsFileExtension(fileName, ".m3d")) animations = LoadModelAnimationsM3DFromMemory(fileName, bytes, animCount);
+#endif
+//#if defined(SUPPORT_FILEFORMAT_GLTF)
+//    if (IsFileExtension(fileName, ".gltf;.glb")) animations = LoadModelAnimationsGLTF(fileName, animCount);
+//#endif
 
     return animations;
 }
@@ -3964,19 +3985,10 @@ static Model LoadOBJ(const char *fileName)
 {
     Model model = { 0 };
 
-    tinyobj_attrib_t attrib = { 0 };
-    tinyobj_shape_t *meshes = NULL;
-    unsigned int meshCount = 0;
-
-    tinyobj_material_t *materials = NULL;
-    unsigned int materialCount = 0;
-
     char *fileText = LoadFileText(fileName);
 
     if (fileText != NULL)
     {
-        unsigned int dataSize = (unsigned int)strlen(fileText);
-
         char currentDir[1024] = { 0 };
         strcpy(currentDir, GetWorkingDirectory()); // Save current working directory
         const char *workingDir = GetDirectoryPath(fileName); // Switch to OBJ directory for material path correctness
@@ -3985,93 +3997,7 @@ static Model LoadOBJ(const char *fileName)
             TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to change working directory", workingDir);
         }
 
-        unsigned int flags = TINYOBJ_FLAG_TRIANGULATE;
-        int ret = tinyobj_parse_obj(&attrib, &meshes, &meshCount, &materials, &materialCount, fileText, dataSize, flags);
-
-        if (ret != TINYOBJ_SUCCESS) TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to load OBJ data", fileName);
-        else TRACELOG(LOG_INFO, "MODEL: [%s] OBJ data loaded successfully: %i meshes/%i materials", fileName, meshCount, materialCount);
-
-        // WARNING: We are not splitting meshes by materials (previous implementation)
-        // Depending on the provided OBJ that was not the best option and it just crashed
-        // so, implementation was simplified to prioritize parsed meshes
-        model.meshCount = meshCount;
-
-        // Set number of materials available
-        // NOTE: There could be more materials available than meshes but it will be resolved at 
-        // model.meshMaterial, just assigning the right material to corresponding mesh
-        model.materialCount = materialCount;
-        if (model.materialCount == 0)
-        {
-            model.materialCount = 1;
-            TRACELOG(LOG_INFO, "MODEL: No materials provided, setting one default material for all meshes");
-        }
-
-        // Init model meshes and materials
-        model.meshes = (Mesh *)RL_CALLOC(model.meshCount, sizeof(Mesh));
-        model.meshMaterial = (int *)RL_CALLOC(model.meshCount, sizeof(int)); // Material index assigned to each mesh
-        model.materials = (Material *)RL_CALLOC(model.materialCount, sizeof(Material));
-
-        // Process each provided mesh
-        for (int i = 0; i < model.meshCount; i++)
-        {
-            // WARNING: We need to calculate the mesh triangles manually using meshes[i].face_offset
-            // because in case of triangulated quads, meshes[i].length actually report quads, 
-            // despite the triangulation that is efectively considered on attrib.num_faces
-            unsigned int tris = 0;
-            if (i == model.meshCount - 1) tris = attrib.num_faces - meshes[i].face_offset;
-            else tris = meshes[i + 1].face_offset;
-
-            model.meshes[i].vertexCount = tris*3;
-            model.meshes[i].triangleCount = tris;   // Face count (triangulated)
-            model.meshes[i].vertices = (float *)RL_CALLOC(model.meshes[i].vertexCount*3, sizeof(float));
-            model.meshes[i].texcoords = (float *)RL_CALLOC(model.meshes[i].vertexCount*2, sizeof(float));
-            model.meshes[i].normals = (float *)RL_CALLOC(model.meshes[i].vertexCount*3, sizeof(float));
-            model.meshMaterial[i] = 0;  // By default, assign material 0 to each mesh
-
-            // Process all mesh faces
-            for (unsigned int face = 0, f = meshes[i].face_offset, v = 0, vt = 0, vn = 0; face < tris; face++, f++, v += 3, vt += 3, vn += 3)
-            {
-                // Get indices for the face
-                tinyobj_vertex_index_t idx0 = attrib.faces[f*3 + 0];
-                tinyobj_vertex_index_t idx1 = attrib.faces[f*3 + 1];
-                tinyobj_vertex_index_t idx2 = attrib.faces[f*3 + 2];
-
-                // Fill vertices buffer (float) using vertex index of the face
-                for (int n = 0; n < 3; n++) { model.meshes[i].vertices[v*3 + n] = attrib.vertices[idx0.v_idx*3 + n]; }
-                for (int n = 0; n < 3; n++) { model.meshes[i].vertices[(v + 1)*3 + n] = attrib.vertices[idx1.v_idx*3 + n]; }
-                for (int n = 0; n < 3; n++) { model.meshes[i].vertices[(v + 2)*3 + n] = attrib.vertices[idx2.v_idx*3 + n]; }
-
-                if (attrib.num_texcoords > 0)
-                {
-                    // Fill texcoords buffer (float) using vertex index of the face
-                    // NOTE: Y-coordinate must be flipped upside-down
-                    model.meshes[i].texcoords[vt*2 + 0] = attrib.texcoords[idx0.vt_idx*2 + 0];
-                    model.meshes[i].texcoords[vt*2 + 1] = 1.0f - attrib.texcoords[idx0.vt_idx*2 + 1];
-
-                    model.meshes[i].texcoords[(vt + 1)*2 + 0] = attrib.texcoords[idx1.vt_idx*2 + 0];
-                    model.meshes[i].texcoords[(vt + 1)*2 + 1] = 1.0f - attrib.texcoords[idx1.vt_idx*2 + 1];
-
-                    model.meshes[i].texcoords[(vt + 2)*2 + 0] = attrib.texcoords[idx2.vt_idx*2 + 0];
-                    model.meshes[i].texcoords[(vt + 2)*2 + 1] = 1.0f - attrib.texcoords[idx2.vt_idx*2 + 1];
-                }
-
-                if (attrib.num_normals > 0)
-                {
-                    // Fill normals buffer (float) using vertex index of the face
-                    for (int n = 0; n < 3; n++) { model.meshes[i].normals[vn*3 + n] = attrib.normals[idx0.vn_idx*3 + n]; }
-                    for (int n = 0; n < 3; n++) { model.meshes[i].normals[(vn + 1)*3 + n] = attrib.normals[idx1.vn_idx*3 + n]; }
-                    for (int n = 0; n < 3; n++) { model.meshes[i].normals[(vn + 2)*3 + n] = attrib.normals[idx2.vn_idx*3 + n]; }
-                }
-            }
-        }
-
-        // Init model materials
-        if (materialCount > 0) ProcessMaterialsOBJ(model.materials, materials, materialCount);
-        else model.materials[0] = LoadMaterialDefault(); // Set default material for the mesh
-
-        tinyobj_attrib_free(&attrib);
-        tinyobj_shapes_free(meshes, model.meshCount);
-        tinyobj_materials_free(materials, materialCount);
+				model = LoadOBJFromMemory(fileName, fileText);
 
         UnloadFileText(fileText);
 
@@ -4100,14 +4026,6 @@ static Model LoadOBJFromMemory(const char *fileName, const char *fileText)
     {
         unsigned int dataSize = (unsigned int)strlen(fileText);
 
-        //char currentDir[1024] = { 0 };
-        //strcpy(currentDir, GetWorkingDirectory()); // Save current working directory
-        //const char *workingDir = GetDirectoryPath(fileName); // Switch to OBJ directory for material path correctness
-        //if (CHDIR(workingDir) != 0)
-        //{
-        //    TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to change working directory", workingDir);
-        //}
-
         unsigned int flags = TINYOBJ_FLAG_TRIANGULATE;
         int ret = tinyobj_parse_obj(&attrib, &meshes, &meshCount, &materials, &materialCount, fileText, dataSize, flags);
 
@@ -4195,14 +4113,6 @@ static Model LoadOBJFromMemory(const char *fileName, const char *fileText)
         tinyobj_attrib_free(&attrib);
         tinyobj_shapes_free(meshes, model.meshCount);
         tinyobj_materials_free(materials, materialCount);
-
-        //UnloadFileText(fileText);
-
-        // Restore current working directory
-        //if (CHDIR(currentDir) != 0)
-        //{
-        //    TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to change working directory", currentDir);
-        //}
     }
 
     return model;
@@ -5712,12 +5622,26 @@ static Model LoadM3D(const char *fileName)
 {
     Model model = { 0 };
 
+    int dataSize = 0;
+    unsigned char *fileData = LoadFileData(fileName, &dataSize);
+
+    if (fileData != NULL)
+    {
+				model = LoadM3DFromMemory(fileName, fileData);
+        UnloadFileData(fileData);
+    }
+
+    return model;
+}
+
+// Load M3D mesh data
+static Model LoadM3DFromMemory(const char *fileName, const char *fileData)
+{
+    Model model = { 0 };
+
     m3d_t *m3d = NULL;
     m3dp_t *prop = NULL;
     int i, j, k, l, n, mi = -2, vcolor = 0;
-
-    int dataSize = 0;
-    unsigned char *fileData = LoadFileData(fileName, &dataSize);
 
     if (fileData != NULL)
     {
@@ -6033,25 +5957,38 @@ static Model LoadM3D(const char *fileName)
         }
 
         m3d_free(m3d);
-        UnloadFileData(fileData);
     }
 
     return model;
 }
 
-#define M3D_ANIMDELAY 17    // Animation frames delay, (~1000 ms/60 FPS = 16.666666* ms)
+#define M3D_ANIMDELAY 43    // Animation frames delay, (~1000 ms/60 FPS = 16.666666* ms)
 
 // Load M3D animation data
 static ModelAnimation *LoadModelAnimationsM3D(const char *fileName, int *animCount)
 {
     ModelAnimation *animations = NULL;
 
+    int dataSize = 0;
+    unsigned char *fileData = LoadFileData(fileName, &dataSize);
+
+    if (fileData != NULL)
+    {
+				animations = LoadModelAnimationsM3DFromMemory(fileName, fileData, animCount);
+        UnloadFileData(fileData);
+    }
+
+    return animations;
+}
+
+// Load M3D animation data
+static ModelAnimation *LoadModelAnimationsM3DFromMemory(const char *fileName, const char *fileData, int *animCount)
+{
+    ModelAnimation *animations = NULL;
+
     m3d_t *m3d = NULL;
     int i = 0, j = 0;
     *animCount = 0;
-
-    int dataSize = 0;
-    unsigned char *fileData = LoadFileData(fileName, &dataSize);
 
     if (fileData != NULL)
     {
@@ -6079,6 +6016,7 @@ static ModelAnimation *LoadModelAnimationsM3D(const char *fileName, int *animCou
 
         for (unsigned int a = 0; a < m3d->numaction; a++)
         {
+            strncpy(animations[a].name, m3d->action[a].name, sizeof(animations[a].name));
             animations[a].frameCount = m3d->action[a].durationmsec / M3D_ANIMDELAY;
             animations[a].boneCount = m3d->numbone + 1;
             animations[a].bones = RL_MALLOC((m3d->numbone + 1)*sizeof(BoneInfo));
@@ -6143,7 +6081,6 @@ static ModelAnimation *LoadModelAnimationsM3D(const char *fileName, int *animCou
         }
 
         m3d_free(m3d);
-        UnloadFileData(fileData);
     }
 
     return animations;
